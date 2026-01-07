@@ -1,0 +1,8 @@
+../Core/Src/as5047p.c:10:20:CS_Low	16	static
+../Core/Src/as5047p.c:11:20:CS_High	16	static
+../Core/Src/as5047p.c:13:26:spi_txrx_u16	40	static
+../Core/Src/as5047p.c:23:24:apply_parity	24	static
+../Core/Src/as5047p.c:35:6:as5047p_init	16	static
+../Core/Src/as5047p.c:40:17:read_reg14	32	static,ignoring_inline_asm
+../Core/Src/as5047p.c:68:10:as5047p_read_angle_raw14	16	static
+../Core/Src/as5047p.c:73:10:as5047p_last_rx2	4	static

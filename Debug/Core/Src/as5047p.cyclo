@@ -1,0 +1,8 @@
+../Core/Src/as5047p.c:10:20:CS_Low	1
+../Core/Src/as5047p.c:11:20:CS_High	1
+../Core/Src/as5047p.c:13:26:spi_txrx_u16	3
+../Core/Src/as5047p.c:23:24:apply_parity	2
+../Core/Src/as5047p.c:35:6:as5047p_init	1
+../Core/Src/as5047p.c:40:17:read_reg14	4
+../Core/Src/as5047p.c:68:10:as5047p_read_angle_raw14	1
+../Core/Src/as5047p.c:73:10:as5047p_last_rx2	1

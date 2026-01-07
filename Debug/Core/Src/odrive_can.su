@@ -1,0 +1,5 @@
+../Core/Src/odrive_can.c:9:24:odrive_build_id	16	static
+../Core/Src/odrive_can.c:13:6:odrive_can_clear_errors	32	static
+../Core/Src/odrive_can.c:20:6:odrive_can_set_axis_state	32	static
+../Core/Src/odrive_can.c:31:6:odrive_can_set_controller_mode	40	static
+../Core/Src/odrive_can.c:48:6:odrive_can_set_input_torque	32	static
