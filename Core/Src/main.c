@@ -145,13 +145,23 @@ int main(void)
   // odrive
   g_od1.hcan = &hfdcan1;
   g_od1.node_id = JOINT_NODE_ID;
-
+  
   // joint
   joint_mit_init(&g_j1);
-  g_j1.kp = 2.0f;
-  g_j1.kd = 0.05f;
-  g_j1.tau_max = 0.30f;
-  g_j1.torque_sign = -1;   // 反方向
+
+  /* 你的实际参数 */
+  joint_mit_config_raw(&g_j1, 5500, 10500, 10.0f); // 10:1 gear
+
+  g_j1.kp = 5.15f;        // 齿隙系统：kp 不要大
+  g_j1.kd = 0.24f;
+  g_j1.tau_max = 0.8f;
+
+  g_j1.q_db        = 0.0055f; // 1 deg
+  g_j1.q_hold_band = 0.010f;
+  g_j1.qd_alpha    = 0.06f;
+  g_j1.tau_rate_limit = 20.0f;
+
+  g_j1.torque_sign = -1; // 如果方向反
 
   // ODrive state
   odrive_can_clear_errors(&g_od1);
@@ -197,21 +207,19 @@ int main(void)
       uint8_t e = 0;
       uint16_t raw = as5047p_read_angle_raw14(&g_enc1, &e);
 
-      if (e != 0) {
+      if (e == 0 && g_j1.zero_valid) {
+          joint_mit_step_1khz(&g_j1, (int32_t)raw);
+          odrive_can_set_input_torque(&g_od1, g_j1.tau);
+      } else {
           odrive_can_set_input_torque(&g_od1, 0.0f);
-          continue;
       }
-
-      joint_mit_step_1khz(&g_j1, (int32_t)raw);
-      odrive_can_set_input_torque(&g_od1, g_j1.tau);
 
       if (++print_ctr >= PRINT_DIV) {
           print_ctr = 0;
           int n = snprintf(uart_buf, sizeof(uart_buf),
-              "[t=%lu] raw=%u zero=%ld q=%ldmrad qd=%ldmrad/s tau=%ldmNm err=%u\r\n",
+              "[t=%lu] raw=%u q=%ldmrad qd=%ldmrad/s tau=%ldmNm err=%u\r\n",
               (unsigned long)g_tick_1khz,
               (unsigned)raw,
-              (long)g_j1.raw_zero,
               (long)(g_j1.q * 1000.0f),
               (long)(g_j1.qd * 1000.0f),
               (long)(g_j1.tau * 1000.0f),
@@ -220,6 +228,7 @@ int main(void)
           HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, (uint16_t)n, 100);
       }
   }
+
 
 
 /* USER CODE END WHILE */

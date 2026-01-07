@@ -1,90 +1,128 @@
 #include "joint_mit.h"
+#include <math.h>
 
-static inline float clampf(float x, float lo, float hi) {
+#define TWO_PI 6.283185307f
+#define ENC_RES 16384.0f   // AS5047P 14-bit
+
+static inline float clampf(float x, float lo, float hi)
+{
     if (x < lo) return lo;
     if (x > hi) return hi;
     return x;
 }
 
-static inline float raw_rel_to_q(const JointMIT *j, int32_t raw_rel) {
-    float norm = (float)raw_rel / j->raw_half_range; // roughly [-1..1]
-    norm = clampf(norm, -1.2f, +1.2f);
-    return norm * j->q_max_rad;
+static inline float deadband(float x, float db)
+{
+    if (x >  db) return x - db;
+    if (x < -db) return x + db;
+    return 0.0f;
 }
 
 void joint_mit_init(JointMIT *j)
 {
-    // defaults safe
-    j->zero_valid = 0;
+    j->raw_zero = 0;
+    j->raw_rel  = 0;
+
     j->q = j->q_prev = 0.0f;
-    j->qd = j->qd_f = 0.0f;
+    j->qd = 0.0f;
+
     j->q_des = 0.0f;
     j->qd_des = 0.0f;
-    j->kp = 2.0f;
+
+    j->kp = 0.1f;
     j->kd = 0.05f;
     j->tau_ff = 0.0f;
     j->tau = 0.0f;
-    j->tau_max = 0.30f;
+    j->tau_max = 0.5f;
 
-    // mapping / soft limits (你按你项目填)
-    j->raw_min = 5500;
-    j->raw_max = 10500;
-    j->margin_raw = 200;
-    j->k_soft = 0.002f;
-    j->q_max_rad = 1.0f;
-    j->raw_half_range = (float)((j->raw_max - j->raw_min) / 2); // 2500
-    j->torque_sign = +1; // 这里就是“方向开关”
+    j->gear_ratio = 1.0f;
+
+    /* backlash handling defaults */
+    j->q_db        = 0.02f;   // ~1.1 deg
+    j->q_hold_band = 0.01f;
+    j->qd_db       = 0.1f;
+
+    j->qd_alpha = 0.08f;
+
+    j->tau_rate_limit = 20.0f; // Nm/s
+    j->tau_prev = 0.0f;
+
+    j->torque_sign = 1;
+
+    j->raw_min = 0;
+    j->raw_max = 16383;
+
+    j->zero_valid = 0;
+}
+
+void joint_mit_config_raw(JointMIT *j,
+                          int32_t raw_min,
+                          int32_t raw_max,
+                          float   gear_ratio)
+{
+    j->raw_min = raw_min;
+    j->raw_max = raw_max;
+    j->gear_ratio = gear_ratio;
 }
 
 void joint_mit_zero_here(JointMIT *j, int32_t raw_now)
 {
     j->raw_zero = raw_now;
+    j->q = 0.0f;
+    j->q_prev = 0.0f;
+    j->qd = 0.0f;
+    j->tau_prev = 0.0f;
     j->zero_valid = 1;
-    j->q = j->q_prev = 0.0f;
-    j->qd = j->qd_f = 0.0f;
-    j->q_des = 0.0f;   // 上电保持
-    j->qd_des = 0.0f;
 }
 
 void joint_mit_step_1khz(JointMIT *j, int32_t raw_abs)
 {
-    j->raw_abs = raw_abs;
-
     if (!j->zero_valid) {
         j->tau = 0.0f;
         return;
     }
 
-    // 1) raw rel
-    j->raw_rel = j->raw_abs - j->raw_zero;
+    /* ---------- position ---------- */
+    j->raw_rel = raw_abs - j->raw_zero;
 
-    // 2) q / qd
-    j->q = raw_rel_to_q(j, j->raw_rel);
+    /* motor side angle */
+    float q_m = (float)j->raw_rel * (TWO_PI / ENC_RES);
 
-    const float dt = 0.001f;
-    float qd_raw = (j->q - j->q_prev) / dt;
+    /* joint side */
+    j->q = q_m / j->gear_ratio;
+
+    /* ---------- velocity ---------- */
+    float qd_raw = (j->q - j->q_prev) * 1000.0f;
     j->q_prev = j->q;
 
-    // low-pass on qd
-    const float alpha = 0.1f;
-    j->qd_f = j->qd_f + alpha * (qd_raw - j->qd_f);
-    j->qd = j->qd_f;
+    j->qd += j->qd_alpha * (qd_raw - j->qd);
 
-    // 3) MIT torque
-    float tau = j->kp * (j->q_des - j->q)
-              + j->kd * (j->qd_des - j->qd)
-              + j->tau_ff;
+    /* ---------- MIT-style control ---------- */
+    float pos_err = j->q_des - j->q;
+    float vel_err = j->qd_des - j->qd;
 
-    // 4) soft limit (用 raw_abs 做边界判断，和 q 方向无关)
-    if (j->raw_abs < (j->raw_min + j->margin_raw)) {
-        float x = (float)((j->raw_min + j->margin_raw) - j->raw_abs);
-        tau += j->k_soft * x;
-    } else if (j->raw_abs > (j->raw_max - j->margin_raw)) {
-        float x = (float)(j->raw_abs - (j->raw_max - j->margin_raw));
-        tau -= j->k_soft * x;
+    /* backlash deadband */
+    float e  = deadband(pos_err, j->q_db);
+    float ed = deadband(vel_err, j->qd_db);
+
+    float tau_cmd;
+
+    /* hold zone: don't fight backlash */
+    if (fabsf(pos_err) < j->q_hold_band) {
+        tau_cmd = j->tau_prev * 0.98f;   // decay
+    } else {
+        tau_cmd = j->kp * e + j->kd * ed + j->tau_ff;
     }
 
-    // 5) clamp + direction
-    tau = clampf(tau, -j->tau_max, +j->tau_max);
-    j->tau = (float)j->torque_sign * tau;
+    /* clamp */
+    tau_cmd = clampf(tau_cmd, -j->tau_max, j->tau_max);
+
+    /* torque slew-rate limit */
+    float max_step = j->tau_rate_limit * 0.001f;
+    float tau = clampf(tau_cmd,
+                        j->tau_prev - max_step,
+                        j->tau_prev + max_step);
+
+    j->tau_prev = tau;
+    j->tau = tau * (float)j->torque_sign;
 }

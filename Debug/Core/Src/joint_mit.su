@@ -1,5 +1,6 @@
-../Core/Src/joint_mit.c:3:21:clampf	24	static
-../Core/Src/joint_mit.c:9:21:raw_rel_to_q	24	static
-../Core/Src/joint_mit.c:15:6:joint_mit_init	16	static
-../Core/Src/joint_mit.c:39:6:joint_mit_zero_here	16	static
-../Core/Src/joint_mit.c:49:6:joint_mit_step_1khz	40	static
+../Core/Src/joint_mit.c:7:21:clampf	24	static
+../Core/Src/joint_mit.c:14:21:deadband	16	static
+../Core/Src/joint_mit.c:21:6:joint_mit_init	16	static
+../Core/Src/joint_mit.c:58:6:joint_mit_config_raw	24	static
+../Core/Src/joint_mit.c:68:6:joint_mit_zero_here	16	static
+../Core/Src/joint_mit.c:78:6:joint_mit_step_1khz	56	static
