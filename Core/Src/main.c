@@ -55,7 +55,7 @@
 #define CONTROL_MODE_TORQUE     1
 #define INPUT_MODE_PASSTHROUGH  1
 
-#define JOINT_NODE_ID           6
+#define JOINT_NODE_ID           2
 
 /* USER CODE END PD */
 
@@ -150,16 +150,16 @@ int main(void)
   joint_mit_init(&g_j1);
 
   /* 你的实际参数 */
-  joint_mit_config_raw(&g_j1, 5500, 10500, 10.0f); // 10:1 gear
+  joint_mit_config_raw(&g_j1, 7000, 14500, 1.0f); // 10:1 gear
 
-  g_j1.kp = 5.15f;        // 齿隙系统：kp 不要大
-  g_j1.kd = 0.24f;
+  g_j1.kp = 0.25f;        // 齿隙系统：kp 不要大
+  g_j1.kd = 0.015f;
   g_j1.tau_max = 0.8f;
 
-  g_j1.q_db        = 0.0055f; // 1 deg
-  g_j1.q_hold_band = 0.010f;
-  g_j1.qd_alpha    = 0.06f;
-  g_j1.tau_rate_limit = 20.0f;
+  g_j1.q_db        = 0.015f; // 1 deg
+  g_j1.q_hold_band = 0.020f;
+  g_j1.qd_alpha    = 0.05f;
+  g_j1.tau_rate_limit = 10.0f;
 
   g_j1.torque_sign = -1; // 如果方向反
 
