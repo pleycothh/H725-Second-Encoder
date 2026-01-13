@@ -1,0 +1,2 @@
+../Core/Src/leg_kin.c:4:6:leg_fk_2d	1
+../Core/Src/leg_kin.c:10:5:leg_ik_2d	3

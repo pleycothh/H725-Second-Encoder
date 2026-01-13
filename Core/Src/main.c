@@ -28,16 +28,17 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 //#include "BMI088driver.h"
-#include "BMI088Middleware.h"
+#include "BMI088Middleware.h" // IMU reader helper
 #include <string.h>
 #include <stdio.h>
-#include "bsp_fdcan.h"
+#include "bsp_fdcan.h"  // FD Can helper
 #include <math.h>  
 
-#include "as5047p.h"
-#include "odrive_can.h"
-#include "joint_mit.h"
-
+#include "as5047p.h"    // AS5047x Helper
+#include "odrive_can.h" // Odrive Can communicate helper
+#include "joint_mit.h" // mimic MIT CAN protical controll
+#include "joint_hw.h" // overall joint level control
+#include "leg_kin.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -50,18 +51,7 @@
 
 // ===== 1kHz loop -> 10Hz print =====
 #define PRINT_DIV               100   // 1kHz/100=10Hz
-
-#define AXIS_STATE_CLOSED_LOOP  8
-#define CONTROL_MODE_TORQUE     1
-#define INPUT_MODE_PASSTHROUGH  1
-
-#define JOINT_NODE_ID_1           2
-#define JOINT_NODE_ID_2           6
-#define JOINT_NODE_ID_3           1
-
-#define HOME_RAW_ABS_1   8000   // TODO: 改成你的真实值（输出轴绝对raw）
-#define HOME_RAW_ABS_2   7500   // TODO: 改成你的真实值（输出轴绝对raw）
-#define HOME_RAW_ABS_3   3300   // TODO: 改成你的真实值（输出轴绝对raw）
+#define JOINT_COUNT 3
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -76,19 +66,41 @@ volatile uint32_t g_tick_1khz = 0;
 volatile uint8_t  g_tick_flag = 0;
 static char uart_buf[160];
 
-// encoder #1
-static AS5047P   g_enc1;
-static ODriveCan g_od1;
-static JointMIT  g_j1;
-// encoder #2
-static AS5047P   g_enc2;
-static ODriveCan g_od2;
-static JointMIT  g_j2;
+static Joint g_joint[JOINT_COUNT];
 
-// encoder #3
-static AS5047P   g_enc3;
-static ODriveCan g_od3;
-static JointMIT  g_j3;
+static const JointConfig g_cfg[JOINT_COUNT] = {
+    // J1
+    {
+        .hspi=&hspi1, .cs_port=GPIOE, .cs_pin=GPIO_PIN_15, // Second Encoder CS pin
+        .hcan=&hfdcan1, .node_id=2, 					   // O-drive can node Id
+        .raw_min=3000, .raw_max=10000, .gear_ratio=1.0f,   // Second Encoder limit | gear_ratio = has second encoder? 1 : gear_ratio
+        .home_raw_abs=8000,                                // Second Home position
+        .kp=0.45f, .kd=0.025f, .tau_max=0.8f,              // MIT KP value
+        .q_db=0.015f, .q_hold_band=0.020f, .qd_alpha=0.05f, .tau_rate_limit=10.0f, // Gear band, better the gear, smaller the number.
+        .torque_sign=-1                                    // Second encoder direction
+    },
+    // J2
+    {
+        .hspi=&hspi1, .cs_port=GPIOB, .cs_pin=GPIO_PIN_10,
+        .hcan=&hfdcan1, .node_id=6,
+        .raw_min=5000, .raw_max=10000, .gear_ratio=1.0f,
+        .home_raw_abs=7500,
+        .kp=0.35f, .kd=0.025f, .tau_max=0.8f,
+        .q_db=0.015f, .q_hold_band=0.020f, .qd_alpha=0.05f, .tau_rate_limit=10.0f,
+        .torque_sign=-1
+    },
+    // J3
+    {
+        .hspi=&hspi1, .cs_port=GPIOB, .cs_pin=GPIO_PIN_11,
+        .hcan=&hfdcan1, .node_id=1,
+        .raw_min=2500, .raw_max=4000, .gear_ratio=1.0f,
+        .home_raw_abs=3300,
+        .kp=0.45f, .kd=0.025f, .tau_max=0.8f,
+        .q_db=0.015f, .q_hold_band=0.020f, .qd_alpha=0.05f, .tau_rate_limit=10.0f,
+        .torque_sign=-1
+    }
+};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -140,7 +152,7 @@ int main(void)
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
 
-  // 1) Power enable (如果你的板子需要)
+  // 1) Power enable (Based on board requirements.)
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
@@ -150,107 +162,24 @@ int main(void)
   bsp_can_init();
   HAL_Delay(200);
 
-  // encoder
 
-  g_enc1.hspi = &hspi1;
-  g_enc1.cs_port = GPIOE;
-  g_enc1.cs_pin  = GPIO_PIN_15;
-  as5047p_init(&g_enc1);
+  // init joints
+  for (int i = 0; i < JOINT_COUNT; i++) {
+	joint_init(&g_joint[i], &g_cfg[i]);
+  }
 
-  g_enc2.hspi = &hspi1;
-  g_enc2.cs_port = GPIOB;
-  g_enc2.cs_pin  = GPIO_PIN_10;
-  as5047p_init(&g_enc2);
+  // enable odrive torque mode
+  for (int i = 0; i < JOINT_COUNT; i++) {
+	joint_odrive_enable_torque_mode(&g_joint[i]);
+  }
 
-  g_enc3.hspi = &hspi1;
-  g_enc3.cs_port = GPIOB;
-  g_enc3.cs_pin  = GPIO_PIN_11;
-  as5047p_init(&g_enc3);
+  // zero to fixed home
+  for (int i = 0; i < JOINT_COUNT; i++) {
+      (void)joint_zero_to_home(&g_joint[i]);
+  }
 
-  // odrive
-  g_od1.hcan = &hfdcan1;
-  g_od1.node_id = JOINT_NODE_ID_1;
   
-  g_od2.hcan = &hfdcan1;
-  g_od2.node_id = JOINT_NODE_ID_2;
-
-  g_od3.hcan = &hfdcan1;
-  g_od3.node_id = JOINT_NODE_ID_3;
-  // joint
-  joint_mit_init(&g_j1);
-  joint_mit_init(&g_j2);
-  joint_mit_init(&g_j3);
-  /* 你的实际参数 */
-  joint_mit_config_raw(&g_j1, 3000, 10000, 1.0f); // 10:1 gear
-  joint_mit_config_raw(&g_j2, 5000, 10000, 1.0f);
-  joint_mit_config_raw(&g_j3, 2500, 4000, 1.0f);
-
-  g_j1.kp = 0.45f;        // 齿隙系统：kp 不要大
-  g_j1.kd = 0.025f;
-  g_j1.tau_max = 0.8f;
-
-  g_j1.q_db        = 0.015f; // 1 deg
-  g_j1.q_hold_band = 0.020f;
-  g_j1.qd_alpha    = 0.05f;
-  g_j1.tau_rate_limit = 10.0f;
-
-  g_j1.torque_sign = -1; // 如果方向反
-
-  g_j2.kp = 0.35f;
-  g_j2.kd = 0.025f;
-  g_j2.tau_max = 0.8f;
-
-  g_j2.q_db = 0.015f;
-  g_j2.q_hold_band = 0.020f;
-  g_j2.qd_alpha = 0.05f;
-  g_j2.tau_rate_limit = 10.0f;
-
-  g_j2.torque_sign = -1;   // 方向需要单独确认
-
-  g_j3.kp = 0.45f;
-  g_j3.kd = 0.025f;
-  g_j3.tau_max = 0.8f;
-
-  g_j3.q_db = 0.015f;
-  g_j3.q_hold_band = 0.020f;
-  g_j3.qd_alpha = 0.05f;
-  g_j3.tau_rate_limit = 10.0f;
-
-  g_j3.torque_sign = -1;   // 方向需要单独确认
-  // ODrive state
-  odrive_can_clear_errors(&g_od1);
-  odrive_can_clear_errors(&g_od2);
-  odrive_can_clear_errors(&g_od3);
-  HAL_Delay(20);
-
-  odrive_can_set_axis_state(&g_od1, AXIS_STATE_CLOSED_LOOP);
-  odrive_can_set_axis_state(&g_od2, AXIS_STATE_CLOSED_LOOP);
-  odrive_can_set_axis_state(&g_od3, AXIS_STATE_CLOSED_LOOP);
-  HAL_Delay(100);
-
-  odrive_can_set_controller_mode(&g_od1, CONTROL_MODE_TORQUE, INPUT_MODE_PASSTHROUGH);
-  odrive_can_set_controller_mode(&g_od2, CONTROL_MODE_TORQUE, INPUT_MODE_PASSTHROUGH);
-  odrive_can_set_controller_mode(&g_od3, CONTROL_MODE_TORQUE, INPUT_MODE_PASSTHROUGH);
-  HAL_Delay(100);
-
-  // zero
-  uint8_t e1 = 0;
-  uint16_t raw1 = as5047p_read_angle_raw14(&g_enc1, &e1);
-  uint8_t e2 = 0;
-  uint16_t raw2 = as5047p_read_angle_raw14(&g_enc2, &e2);
-  uint8_t e3 = 0;
-  uint16_t raw3 = as5047p_read_angle_raw14(&g_enc3, &e3);
-
-  if (e1 == 0) joint_mit_zero_here(&g_j1, HOME_RAW_ABS_1);
-  else HAL_UART_Transmit(&huart1, (uint8_t*)"[WARN] enc1 zero failed\r\n", 25, 50);
-
-  if (e2 == 0) joint_mit_zero_here(&g_j2, HOME_RAW_ABS_2);
-  else HAL_UART_Transmit(&huart1, (uint8_t*)"[WARN] enc2 zero failed\r\n", 25, 50);
-
-  if (e3 == 0) joint_mit_zero_here(&g_j3, HOME_RAW_ABS_3);
-  else HAL_UART_Transmit(&huart1, (uint8_t*)"[WARN] enc2 zero failed\r\n", 25, 50);
-
-  // 5) start 1kHz tick
+  // start 1kHz tick
   HAL_TIM_Base_Start_IT(&htim2);
 
   const char *boot = "\r\n[H725] Joint1 MIT: AS5047P + MiniODrive torque @1kHz\r\n";
@@ -271,46 +200,25 @@ int main(void)
       if (g_tick_1khz == last_tick) continue;
       last_tick = g_tick_1khz;
 
-      uint8_t e1 = 0;
-      uint16_t raw1 = as5047p_read_angle_raw14(&g_enc1, &e1);
-      uint8_t e2 = 0;
-      uint16_t raw2 = as5047p_read_angle_raw14(&g_enc2, &e2);
-      uint8_t e3 = 0;
-      uint16_t raw3 = as5047p_read_angle_raw14(&g_enc3, &e3);
 
-      if (e1 == 0 && g_j1.zero_valid) {
-          joint_mit_step_1khz(&g_j1, (int32_t)raw1);
-          odrive_can_set_input_torque(&g_od1, g_j1.tau);
-      } else {
-          odrive_can_set_input_torque(&g_od1, 0.0f);
+      // 1kHz update all joints
+      for (int i = 0; i < JOINT_COUNT; i++) {
+          joint_update_1khz(&g_joint[i]);
       }
 
-      if (e2 == 0 && g_j2.zero_valid) {
-          joint_mit_step_1khz(&g_j2, (int32_t)raw2);
-          odrive_can_set_input_torque(&g_od2, g_j2.tau);
-      } else {
-          odrive_can_set_input_torque(&g_od2, 0.0f);
-      }
-
-      if (e3 == 0 && g_j3.zero_valid) {
-          joint_mit_step_1khz(&g_j3, (int32_t)raw3);
-          odrive_can_set_input_torque(&g_od3, g_j3.tau);
-      } else {
-          odrive_can_set_input_torque(&g_od3, 0.0f);
-      }
-
+      // debug print @10Hz
       if (++print_ctr >= PRINT_DIV) {
           print_ctr = 0;
+
           int n = snprintf(uart_buf, sizeof(uart_buf),
-              "[t=%lu] raw1=%u raw2=%u raw3=%u q=%ldmrad qd=%ldmrad/s tau=%ldmNm err=%u\r\n",
+              "[t=%lu] r1=%u r2=%u r3=%u | q1=%ld q2=%ld q3=%ld (mrad)\r\n",
               (unsigned long)g_tick_1khz,
-              (unsigned)raw1,
-		      (unsigned)raw2,
-			  (unsigned)raw3,
-              (long)(g_j1.q * 1000.0f),
-              (long)(g_j1.qd * 1000.0f),
-              (long)(g_j1.tau * 1000.0f),
-              (unsigned)e1);
+              (unsigned)g_joint[0].last_raw,
+              (unsigned)g_joint[1].last_raw,
+              (unsigned)g_joint[2].last_raw,
+              (long)(joint_get_q(&g_joint[0]) * 1000.0f),
+              (long)(joint_get_q(&g_joint[1]) * 1000.0f),
+              (long)(joint_get_q(&g_joint[2]) * 1000.0f));
 
           HAL_UART_Transmit(&huart1, (uint8_t*)uart_buf, (uint16_t)n, 100);
       }

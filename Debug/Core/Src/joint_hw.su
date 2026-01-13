@@ -1,0 +1,5 @@
+../Core/Src/joint_hw.c:9:13:apply_cfg_to_mit	16	static
+../Core/Src/joint_hw.c:27:6:joint_init	16	static
+../Core/Src/joint_hw.c:45:6:joint_odrive_enable_torque_mode	16	static
+../Core/Src/joint_hw.c:58:9:joint_zero_to_home	24	static
+../Core/Src/joint_hw.c:78:6:joint_update_1khz	24	static
